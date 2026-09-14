@@ -13,6 +13,7 @@ st.title("📈 股市資金流向與專業推斷系統")
 # ================= 賦予網頁記憶力 (Session State) =================
 if 'watchlist' not in st.session_state:
     st.session_state['watchlist'] = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
+
 if 'diag_ticker' not in st.session_state:
     st.session_state['diag_ticker'] = "3041"
 
@@ -87,7 +88,7 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
         us_data, global_sentiment = fetch_us_macro()
         if us_data:
             cols = st.columns(5)
-            labels = {"TSM": "台積電 ADR", "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "AMD": "超微 (AMD)", "SOXX": "半導體 ETF"}
+            labels = {"TSM": "台積電 ADR", "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "AMD": "超微 (AMD)", "SOX": "半導體 ETF"}
             for i, (ticker, info) in enumerate(us_data.items()):
                 with cols[i]:
                     st.metric(label=labels[ticker], value=f"${info['price']:.2f}", delta=f"{info['pct']:.2f}%")
