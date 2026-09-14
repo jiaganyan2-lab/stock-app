@@ -146,7 +146,7 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                         "現沖/當沖推薦": day_trade
                     })
         
-      if scan_results:
+        if scan_results:
             res_df = pd.DataFrame(scan_results)
             st.dataframe(
                 res_df,
