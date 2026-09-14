@@ -87,14 +87,14 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
         us_data, global_sentiment = fetch_us_macro()
         if us_data:
             cols = st.columns(5)
-            labels = {"TSM": "台積電 ADR", "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "AMD": "超微 (AMD)", "SOX": "半導體 ETF"}
+            labels = {"TSM": "台積電 ADR", "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "AMD": "超微 (AMD)", "SOXX": "半導體 ETF"}
             for i, (ticker, info) in enumerate(us_data.items()):
                 with cols[i]:
                     st.metric(label=labels[ticker], value=f"${info['price']:.2f}", delta=f"{info['pct']:.2f}%")
             
             st.markdown("---")
             st.subheader("📊 關鍵指標 K 線圖")
-            selected_ticker = st.selectbox("選擇要查看技術線圖的指標", ["TSM", "NVDA", "AAPL", "AMD", "SOX"])
+            selected_ticker = st.selectbox("選擇要查看技術線圖的指標", ["TSM", "NVDA", "AAPL", "AMD", "SOXX"])
             
             t_chart = yf.Ticker(selected_ticker)
             data = t_chart.history(period="6mo")
