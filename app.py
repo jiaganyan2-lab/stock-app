@@ -13,7 +13,6 @@ st.title("📈 股市資金流向與專業推斷系統")
 # ================= 賦予網頁記憶力 (Session State) =================
 if 'watchlist' not in st.session_state:
     st.session_state['watchlist'] = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
-
 if 'diag_ticker' not in st.session_state:
     st.session_state['diag_ticker'] = "3041"
 
