@@ -300,8 +300,8 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='blue'), name='K值'), row=4, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='orange'), name='D值'), row=4, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple'), name='RSI'), row=5, col=1)
-                fig.add_hline(y=70, line_dash="dot", row=5, col=1, annotation_text="過熱(70)"), fig.add_hline(y=30, line_dash="dot", row=5, col=1, annotation_text="超賣(30)")
-
+                fig.add_hline(y=70, line_dash="dot", row=5, col=1, annotation_text="過熱(70)")
+                fig.add_hline(y=30, line_dash="dot", row=5, col=1, annotation_text="超賣(30)")
                 fig.update_layout(height=1000, xaxis_rangeslider_visible=False, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
