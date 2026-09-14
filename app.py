@@ -21,7 +21,7 @@ def fetch_twse_data():
     url = "https://www.twse.com.tw/fund/T86?response=json"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             return response.json()
     except:
@@ -33,7 +33,7 @@ def fetch_twse_data():
 # ==========================================
 if option == "美股動向與 K 線分析":
     st.header("🇺🇸 美股動向與 K 線分析")
-    ticker = st.text_input("請輸入美股代號 (例如: AAPL, TSLA, NVDA)", "NVDA")
+    ticker = st.text_input("請輸入美股代號 (例如: AAPL, TSLA, NVDA)", "NVDA").strip()
     
     if st.button("載入資料"):
         with st.spinner('抓取資料中...'):
@@ -108,7 +108,7 @@ elif option == "台股三大法人資金流向與推斷":
                         '自營商買賣超(張)': '{:,.0f}', '三大法人合計(張)': '{:,.0f}'
                     }), use_container_width=True)
             else:
-                st.error("目前無資料，可能是假日、盤後資料尚未更新，或已被證交所暫時限制連線。")
+                st.warning("⚠️ 目前無資料。可能是假日、盤後資料尚未更新，或者是「雲端主機 IP」被證交所暫時限制連線。")
 
 # ==========================================
 # 功能三：個股技術面與籌碼綜合診斷
@@ -118,7 +118,8 @@ elif option == "個股技術面與籌碼綜合診斷":
     
     col1, col2 = st.columns([1, 3])
     with col1:
-        stock_id = st.text_input("輸入台股代號 (如: 2330)", "2330")
+        # 預設一些波動度較大的中小型股或熱門股作為範例
+        stock_id = st.text_input("輸入台股代號 (如: 2409, 3041, 6233)", "2409").strip()
         analyze_btn = st.button("開始綜合診斷")
     
     if analyze_btn:
@@ -127,7 +128,7 @@ elif option == "個股技術面與籌碼綜合診斷":
             df = yf.download(yf_ticker, period="6mo")
             
             if df.empty:
-                yf_ticker = f"{stock_id}.TWO"
+                yf_ticker = f"{stock_id}.TWO" # 嘗試上櫃
                 df = yf.download(yf_ticker, period="6mo")
 
             if df.empty:
@@ -135,6 +136,9 @@ elif option == "個股技術面與籌碼綜合診斷":
             else:
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
+
+                # 處理成交量 NaN 錯誤
+                df['Volume'] = df['Volume'].fillna(0)
 
                 stock_name = stock_id
                 foreign_buy, trust_buy, dealer_buy = 0, 0, 0
@@ -156,6 +160,7 @@ elif option == "個股技術面與籌碼綜合診斷":
                                 has_t86_data = True
                                 break
                 
+                # 若證交所抓不到名稱，用 yfinance 抓
                 if stock_name == stock_id:
                     try:
                         info = yf.Ticker(yf_ticker).info
@@ -163,18 +168,29 @@ elif option == "個股技術面與籌碼綜合診斷":
                     except:
                         pass
 
+                # 【升級】多週期均線系統 (5MA短線, 20MA中線, 60MA長線)
+                df['5MA'] = df['Close'].rolling(window=5).mean()
                 df['20MA'] = df['Close'].rolling(window=20).mean()
+                df['60MA'] = df['Close'].rolling(window=60).mean()
+                
+                # 【升級】當沖/現沖波動度指標：日振幅 = (最高 - 最低) / 昨收
+                df['Pre_Close'] = df['Close'].shift(1)
+                df['Amplitude'] = ((df['High'] - df['Low']) / df['Pre_Close']) * 100
+                
+                # 布林通道與量能
                 df['STD'] = df['Close'].rolling(window=20).std()
                 df['BB_Upper'] = df['20MA'] + (2 * df['STD'])
                 df['BB_Lower'] = df['20MA'] - (2 * df['STD'])
                 df['Vol_5MA'] = df['Volume'].rolling(window=5).mean()
                 
+                # MACD
                 exp1 = df['Close'].ewm(span=12, adjust=False).mean()
                 exp2 = df['Close'].ewm(span=26, adjust=False).mean()
                 df['MACD'] = exp1 - exp2
                 df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
                 df['MACD_Hist'] = df['MACD'] - df['Signal']
                 
+                # RSI & KD
                 delta = df['Close'].diff()
                 gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
                 loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -189,15 +205,20 @@ elif option == "個股技術面與籌碼綜合診斷":
 
                 fig = make_subplots(rows=5, cols=1, shared_xaxes=True, 
                                     vertical_spacing=0.02, row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
-                                    subplot_titles=(f"{stock_id} {stock_name} - 股價與布林通道", "成交量 (Volume)", "MACD", "KD", "RSI"))
+                                    subplot_titles=(f"{stock_id} {stock_name} - 股價與均線系統", "成交量 (Volume)", "MACD", "KD", "RSI"))
                 
                 fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
                                              name='K線', increasing_line_color='red', increasing_fillcolor='red',
                                              decreasing_line_color='green', decreasing_fillcolor='green'), row=1, col=1)
                 
-                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(255, 0, 0, 0.3)'), name='上軌'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df.index, y=df['20MA'], line=dict(color='orange', dash='dash'), name='月線(20MA)'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(0, 255, 0, 0.3)'), name='下軌'), row=1, col=1)
+                # 加入均線
+                fig.add_trace(go.Scatter(x=df.index, y=df['5MA'], line=dict(color='fuchsia', width=1), name='5MA (週線)'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['20MA'], line=dict(color='orange', width=2), name='20MA (月線)'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['60MA'], line=dict(color='blue', width=2, dash='dash'), name='60MA (季線)'), row=1, col=1)
+                
+                # 加入布林通道上下軌
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(169, 169, 169, 0.5)', width=1), name='布林上軌'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(169, 169, 169, 0.5)', width=1), name='布林下軌'), row=1, col=1)
                 
                 latest_close = df['Close'].iloc[-1]
                 fig.add_annotation(x=df.index[-1], y=latest_close,
@@ -232,6 +253,7 @@ elif option == "個股技術面與籌碼綜合診斷":
                 bullish_reasons = []
                 bearish_reasons = []
                 
+                # 大戶動向判斷
                 if has_t86_data:
                     if foreign_buy > 0 and trust_buy > 0:
                         bullish_reasons.append(f"大戶動向：外資與投信【同步大買】 (外資 {foreign_buy:.0f}張, 投信 {trust_buy:.0f}張)。")
@@ -246,15 +268,34 @@ elif option == "個股技術面與籌碼綜合診斷":
                         bearish_reasons.append(f"大戶動向：外資【賣出提款】 ({foreign_buy:.0f}張)。")
                         score -= 1
                 else:
-                    bullish_reasons.append("大戶動向：今日無明顯進出 (或該檔為上櫃股票，需另外查詢)。")
+                    bullish_reasons.append("大戶動向：今日無明顯進出，或遭雲端阻擋 (若為上櫃股票請參考櫃買中心)。")
 
+                # 【升級】當沖與波動度提示
+                amp = latest['Amplitude']
+                if pd.notna(amp):
+                    if amp >= 4.0:
+                        bullish_reasons.append(f"⚡ 短線動能：今日振幅達 {amp:.1f}%，【波動活躍】，極適合現沖或當沖操作。")
+                        score += 1
+                    elif amp < 2.0:
+                        bearish_reasons.append(f"💤 短線動能：今日振幅僅 {amp:.1f}%，【股價沉悶】，短線操作獲利空間較小。")
+
+                # 量能判斷
                 if latest['Volume'] > latest['Vol_5MA'] * 1.5 and latest['Close'] > latest['Open']:
-                    bullish_reasons.append("成交量：今日【出量上漲】 (比平常多1.5倍)，大家搶著買，容易繼續漲。")
+                    bullish_reasons.append("成交量：今日【出量上漲】 (比平常多1.5倍)，市場搶買意願高。")
                     score += 1
                 elif latest['Volume'] > latest['Vol_5MA'] * 1.5 and latest['Close'] < latest['Open']:
-                    bearish_reasons.append("成交量：今日【出量下跌】 (比平常多1.5倍)，大家搶著賣，賣壓很重。")
+                    bearish_reasons.append("成交量：今日【出量下跌】 (比平常多1.5倍)，賣壓沉重。")
                     score -= 1
 
+                # 趨勢與均線判斷 (加入做空提示)
+                if latest['Close'] > latest['20MA'] and latest['Close'] > latest['60MA']:
+                    bullish_reasons.append("均線趨勢：股價站上月線與季線，屬於強勢【多頭格局】。")
+                    score += 1
+                elif latest['Close'] < latest['20MA'] and latest['Close'] < latest['60MA']:
+                    bearish_reasons.append("均線趨勢：股價跌破月線與季線，【趨勢轉弱】，需留意做空或借券賣出之壓力。")
+                    score -= 1
+
+                # MACD 判斷
                 if latest['MACD_Hist'] > 0 and df.iloc[-2]['MACD_Hist'] <= 0:
                     bullish_reasons.append("MACD指標：出現【黃金交叉】，是剛開始起漲的訊號。")
                     score += 2
@@ -268,26 +309,13 @@ elif option == "個股技術面與籌碼綜合診斷":
                     bearish_reasons.append("MACD指標：維持【下跌趨勢】。")
                     score -= 1
 
+                # KD 判斷
                 if latest['K'] > latest['D']:
                     bullish_reasons.append("KD指標：K值大於D值，【短期動能向上】。")
                     score += 1
                 else:
                     bearish_reasons.append("KD指標：K值小於D值，【短期動能向下】。")
                     score -= 1
-
-                if latest['RSI'] > 70:
-                    bearish_reasons.append(f"RSI指標：目前數值 {latest['RSI']:.1f}，代表漲太多【過熱了】，短時間內隨時可能跌下來。")
-                    score -= 1
-                elif latest['RSI'] < 30:
-                    bullish_reasons.append(f"RSI指標：目前數值 {latest['RSI']:.1f}，代表跌太多【超賣了】，隨時有機會反彈。")
-                    score += 1
-
-                if latest['Close'] > latest['BB_Upper']:
-                    bearish_reasons.append("布林通道：股價漲破天花板(上軌)，衝太快容易被拉回。")
-                    score -= 1
-                elif latest['Close'] < latest['BB_Lower']:
-                    bullish_reasons.append("布林通道：股價跌破地板(下軌)，跌深了準備反彈。")
-                    score += 1
 
                 col_res1, col_res2 = st.columns(2)
                 with col_res1:
@@ -296,9 +324,9 @@ elif option == "個股技術面與籌碼綜合診斷":
                     st.error("🔴 看跌訊號 (容易下跌)\n\n" + "\n\n".join([f"- {r}" for r in bearish_reasons]) if bearish_reasons else "無明顯看跌訊號")
 
                 st.markdown("### 📊 最終推斷結論")
-                if score >= 3:
-                    st.info("**⭐ 適合尋找買點 (強勢看漲)**：技術面與大戶動向都表現很好，上漲機會高，可考慮進場買進。")
-                elif 0 <= score < 3:
-                    st.warning("**👀 建議暫時觀望 (持平整理)**：目前看漲與看跌的訊號互相抵銷，沒有明顯方向。建議先不要有大動作，或是等跌到低點再買。")
+                if score >= 4:
+                    st.info("**⭐ 適合尋找買點 (強勢看漲)**：技術面與大戶動向皆強，量價配合良好，可考慮順勢進場做多。")
+                elif 0 <= score < 4:
+                    st.warning("**👀 建議暫時觀望 (持平整理)**：多空訊號分歧，未見明顯表態。建議利用布林通道上下軌做區間操作，或等待帶量突破。")
                 else:
-                    st.error("**⚠️ 建議避開或賣出 (弱勢看跌)**：各項指標都轉弱，且大戶沒有支持，股價容易繼續跌。如果手上有股票，建議考慮分批賣出；還沒買的建議先避開。")
+                    st.error("**⚠️ 建議避開或逢高做空 (弱勢看跌)**：各項指標轉弱且籌碼渙散。若手上有持股建議減碼；空手者可觀察跌破支撐後的放空機會。")
