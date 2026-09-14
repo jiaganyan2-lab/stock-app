@@ -5,11 +5,16 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-import datetime
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="全球股市與籌碼推斷系統", layout="wide")
 st.title("📈 股市資金流向與專業推斷系統")
+
+# ================= 賦予網頁記憶力 (Session State) =================
+if 'watchlist' not in st.session_state:
+    st.session_state['watchlist'] = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
+if 'diag_ticker' not in st.session_state:
+    st.session_state['diag_ticker'] = "3041"
 
 option = st.sidebar.selectbox(
     "請選擇功能",
@@ -102,15 +107,15 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
                 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# 功能二：自選股雷達掃描 (現沖與波段尋寶) - 全新功能
+# 功能二：自選股雷達掃描
 # ==========================================
 elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
     st.header("🎯 自選股雷達掃描 (快速戰情室)")
     st.write("自動掃描預設口袋名單，找出今日波動最大、最適合操作的標的。")
     
-    # 預設自選清單
-    default_watchlist = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
-    user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", default_watchlist)
+    # 讀取並更新記憶體中的自選股名單
+    user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", st.session_state['watchlist'])
+    st.session_state['watchlist'] = user_input
     
     if st.button("啟動雷達掃描"):
         stocks = [s.strip() for s in user_input.split(',')]
@@ -123,13 +128,11 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                     latest = df.iloc[-1]
                     prev = df.iloc[-2]
                     
-                    # 計算基本指標
                     pct_change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
                     amplitude = ((latest['High'] - latest['Low']) / prev['Close']) * 100
                     ma20 = df['Close'].rolling(20).mean().iloc[-1]
                     vol_ratio = latest['Volume'] / df['Volume'].rolling(5).mean().iloc[-1] if df['Volume'].rolling(5).mean().iloc[-1] > 0 else 0
                     
-                    # 狀態判定
                     trend = "🟢 偏多" if latest['Close'] > ma20 else "🔴 偏空"
                     day_trade = "🔥 極佳" if amplitude >= 4.0 and vol_ratio >= 1.2 else "💤 沉悶"
                     
@@ -145,58 +148,51 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
         
         if scan_results:
             res_df = pd.DataFrame(scan_results)
-            
-            # 使用 Streamlit 原生的欄位設定，避免背景漸層在雲端當機
             st.dataframe(
                 res_df,
                 use_container_width=True,
                 column_config={
-                    "漲跌幅 (%)": st.column_config.NumberColumn(
-                        "漲跌幅 (%)",
-                        format="%+.2f %%"
-                    ),
-                    "今日振幅 (%)": st.column_config.NumberColumn(
-                        "今日振幅 (%)",
-                        format="%.2f %%"
-                    )
+                    "漲跌幅 (%)": st.column_config.NumberColumn("漲跌幅 (%)", format="%+.2f %%"),
+                    "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f %%")
                 }
             )
             st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表今日主力交投熱絡，極度適合短線或現沖操作。")
 
 # ==========================================
-# 功能三：台股三大法人資金流向
+# 功能三：台股三大法人資金流向 (拔除按鈕直讀版)
 # ==========================================
 elif option == "3. 台股三大法人資金流向":
     st.header("🇹🇼 台股三大法人資金流向")
-    if st.button("獲取最新法人動向"):
-        with st.spinner('從資料庫抓取最新法人動向中...'):
-            data = fetch_twse_data()
-            if data and data.get('stat') == 'OK' and 'fields' in data and 'data' in data:
-                fields = data['fields']
-                raw_data = data['data']
-                idx_code = next((i for i, f in enumerate(fields) if "代號" in f), 0)
-                idx_name = next((i for i, f in enumerate(fields) if "名稱" in f), 1)
-                idx_foreign = next((i for i, f in enumerate(fields) if "外資及陸資買賣超" in f or ("外" in f and "買賣超" in f and "自營" not in f)), -1)
-                idx_trust = next((i for i, f in enumerate(fields) if "投信" in f and "買賣超" in f), -1)
-                idx_dealer = next((i for i, f in enumerate(fields) if "自營商買賣超" in f and "外資" not in f), -1)
-                
-                if -1 not in [idx_foreign, idx_trust, idx_dealer]:
-                    df = pd.DataFrame(raw_data)
-                    df_clean = pd.DataFrame({
-                        '股票代號': df[idx_code].astype(str),
-                        '股票名稱': df[idx_name].astype(str),
-                        '外資買賣超(張)': pd.to_numeric(df[idx_foreign].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000,
-                        '投信買賣超(張)': pd.to_numeric(df[idx_trust].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000,
-                        '自營商買賣超(張)': pd.to_numeric(df[idx_dealer].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000
-                    })
-                    df_clean['三大法人合計(張)'] = df_clean['外資買賣超(張)'] + df_clean['投信買賣超(張)'] + df_clean['自營商買賣超(張)']
-                    df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15)
-                    st.dataframe(df_filtered.style.format({
-                        '外資買賣超(張)': '{:,.0f}', '投信買賣超(張)': '{:,.0f}',
-                        '自營商買賣超(張)': '{:,.0f}', '三大法人合計(張)': '{:,.0f}'
-                    }), use_container_width=True)
-            else:
-                st.warning("⚠️ 目前無資料。可能盤後資料未更新，或遭證交所限制連線。")
+    st.write("直接讀取快取中的台灣證券交易所（TWSE）三大法人買賣超資料。")
+    
+    with st.spinner('嘗試連線證交所讀取資料中...'):
+        data = fetch_twse_data()
+        if data and data.get('stat') == 'OK' and 'fields' in data and 'data' in data:
+            fields = data['fields']
+            raw_data = data['data']
+            idx_code = next((i for i, f in enumerate(fields) if "代號" in f), 0)
+            idx_name = next((i for i, f in enumerate(fields) if "名稱" in f), 1)
+            idx_foreign = next((i for i, f in enumerate(fields) if "外資及陸資買賣超" in f or ("外" in f and "買賣超" in f and "自營" not in f)), -1)
+            idx_trust = next((i for i, f in enumerate(fields) if "投信" in f and "買賣超" in f), -1)
+            idx_dealer = next((i for i, f in enumerate(fields) if "自營商買賣超" in f and "外資" not in f), -1)
+            
+            if -1 not in [idx_foreign, idx_trust, idx_dealer]:
+                df = pd.DataFrame(raw_data)
+                df_clean = pd.DataFrame({
+                    '股票代號': df[idx_code].astype(str),
+                    '股票名稱': df[idx_name].astype(str),
+                    '外資買賣超(張)': pd.to_numeric(df[idx_foreign].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000,
+                    '投信買賣超(張)': pd.to_numeric(df[idx_trust].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000,
+                    '自營商買賣超(張)': pd.to_numeric(df[idx_dealer].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000
+                })
+                df_clean['三大法人合計(張)'] = df_clean['外資買賣超(張)'] + df_clean['投信買賣超(張)'] + df_clean['自營商買賣超(張)']
+                df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15)
+                st.dataframe(df_filtered.style.format({
+                    '外資買賣超(張)': '{:,.0f}', '投信買賣超(張)': '{:,.0f}',
+                    '自營商買賣超(張)': '{:,.0f}', '三大法人合計(張)': '{:,.0f}'
+                }), use_container_width=True)
+        else:
+            st.error("⚠️ 無法取得證交所資料。這通常是因為台灣證交所的防火牆機制，暫時阻擋了雲端主機的海外 IP，或是目前為盤後資料更新空檔。")
 
 # ==========================================
 # 功能四：個股技術面與籌碼綜合診斷
@@ -206,7 +202,9 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
     
     col1, col2 = st.columns([1, 3])
     with col1:
-        stock_id = st.text_input("輸入台股代號 (如: 3041, 2409)", "3041").strip()
+        # 讀取並更新記憶體中的單檔股票代號
+        stock_id = st.text_input("輸入台股代號 (如: 3041, 2409)", st.session_state['diag_ticker']).strip()
+        st.session_state['diag_ticker'] = stock_id
         analyze_btn = st.button("開始深度診斷")
     
     if analyze_btn:
@@ -238,7 +236,13 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                                 has_t86_data = True
                                 break
                 
-                # 計算各項指標
+                if stock_name == stock_id:
+                    try:
+                        info = yf.Ticker(f"{stock_id}.TW").info
+                        stock_name = info.get('shortName', stock_id)
+                    except:
+                        pass
+
                 df['5MA'] = df['Close'].rolling(window=5).mean()
                 df['20MA'] = df['Close'].rolling(window=20).mean()
                 df['60MA'] = df['Close'].rolling(window=60).mean()
@@ -246,18 +250,15 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 df['Amplitude'] = ((df['High'] - df['Low']) / df['Pre_Close']) * 100
                 df['Vol_5MA'] = df['Volume'].rolling(window=5).mean()
                 
-                # 【新增】近期關鍵支撐與壓力線 (取20日最高與最低)
                 recent_res = df['High'].rolling(20).max().iloc[-1]
                 recent_sup = df['Low'].rolling(20).min().iloc[-1]
                 
-                # MACD
                 exp1 = df['Close'].ewm(span=12, adjust=False).mean()
                 exp2 = df['Close'].ewm(span=26, adjust=False).mean()
                 df['MACD'] = exp1 - exp2
                 df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
                 df['MACD_Hist'] = df['MACD'] - df['Signal']
                 
-                # RSI & KD
                 delta = df['Close'].diff()
                 gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
                 loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -269,7 +270,6 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
                 df['D'] = df['K'].ewm(com=2, adjust=False).mean()
 
-                # 繪圖
                 fig = make_subplots(rows=5, cols=1, shared_xaxes=True, 
                                     vertical_spacing=0.02, row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
                                     subplot_titles=(f"{stock_id} {stock_name} - 股價與支撐壓力", "成交量", "MACD", "KD", "RSI"))
@@ -281,7 +281,6 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 fig.add_trace(go.Scatter(x=df.index, y=df['20MA'], line=dict(color='orange', width=2), name='20MA (月線)'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['60MA'], line=dict(color='blue', width=2, dash='dash'), name='60MA (季線)'), row=1, col=1)
                 
-                # 【新增】畫出水平壓力線與支撐線
                 fig.add_hline(y=recent_res, line_dash="dash", line_color="red", annotation_text="壓力線 (近20日高點)", row=1, col=1)
                 fig.add_hline(y=recent_sup, line_dash="dash", line_color="lightgreen", annotation_text="支撐線 (近20日低點)", row=1, col=1)
                 
@@ -299,9 +298,11 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 
                 fig.add_trace(go.Scatter(x=df.index, y=df['K'], line=dict(color='blue'), name='K值'), row=4, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['D'], line=dict(color='orange'), name='D值'), row=4, col=1)
+                
                 fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple'), name='RSI'), row=5, col=1)
                 fig.add_hline(y=70, line_dash="dot", row=5, col=1, annotation_text="過熱(70)")
                 fig.add_hline(y=30, line_dash="dot", row=5, col=1, annotation_text="超賣(30)")
+
                 fig.update_layout(height=1000, xaxis_rangeslider_visible=False, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -311,7 +312,6 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 latest = df.iloc[-1]
                 score = 0
                 
-                # 【改版】獨立的短線與放空報告區
                 st.markdown("#### ⚡ 短線沖銷與做空專屬雷達")
                 amp = latest['Amplitude']
                 if pd.notna(amp) and amp >= 4.0:
