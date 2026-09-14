@@ -12,9 +12,9 @@ st.title("📈 股市資金流向與專業推斷系統")
 
 # ================= 賦予網頁記憶力 (Session State) =================
 if 'watchlist' not in st.session_state:
-    st.session_state['watchlist'] = "2409, 8150, 2339, 2342, 2302, 2340, 3481, 1714, 2338"
+    st.session_state['watchlist'] = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
 if 'diag_ticker' not in st.session_state:
-    st.session_state['diag_ticker'] = "2342"
+    st.session_state['diag_ticker'] = "3041"
 
 option = st.sidebar.selectbox(
     "請選擇功能",
@@ -63,12 +63,15 @@ def fetch_us_macro():
 
 @st.cache_data(ttl=600)
 def get_stock_data(stock_id):
-    """自動判斷上市或上櫃，抓取歷史資料"""
+    """自動判斷上市或上櫃，抓取歷史資料，並過濾掉空白的幽靈數據"""
     df = yf.download(f"{stock_id}.TW", period="6mo")
     if df.empty:
         df = yf.download(f"{stock_id}.TWO", period="6mo")
-    if not df.empty and isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    if not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        # 【關鍵防護一】剔除沒有收盤價的幽靈行，避免產生 NaN
+        df.dropna(subset=['Close'], inplace=True)
     return df
 
 # ==========================================
@@ -93,6 +96,7 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
             if not data.empty:
                 if isinstance(data.columns, pd.MultiIndex):
                     data.columns = data.columns.get_level_values(0)
+                data.dropna(subset=['Close'], inplace=True)
                 fig = go.Figure(data=[go.Candlestick(x=data.index,
                                 open=data['Open'], high=data['High'],
                                 low=data['Low'], close=data['Close'], name="K線",
@@ -113,7 +117,6 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
     st.header("🎯 自選股雷達掃描 (快速戰情室)")
     st.write("自動掃描預設口袋名單，找出今日波動最大、最適合操作的標的。")
     
-    # 讀取並更新記憶體中的自選股名單
     user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", st.session_state['watchlist'])
     st.session_state['watchlist'] = user_input
     
@@ -130,6 +133,10 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                     
                     pct_change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
                     amplitude = ((latest['High'] - latest['Low']) / prev['Close']) * 100
+                    # 防呆：如果振幅是 NaN，強制補 0
+                    if pd.isna(amplitude):
+                        amplitude = 0.0
+                        
                     ma20 = df['Close'].rolling(20).mean().iloc[-1]
                     vol_ratio = latest['Volume'] / df['Volume'].rolling(5).mean().iloc[-1] if df['Volume'].rolling(5).mean().iloc[-1] > 0 else 0
                     
@@ -157,8 +164,9 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                 }
             )
             st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表今日主力交投熱絡，極度適合短線或現沖操作。")
+
 # ==========================================
-# 功能三：台股三大法人資金流向 (拔除按鈕直讀版)
+# 功能三：台股三大法人資金流向
 # ==========================================
 elif option == "3. 台股三大法人資金流向":
     st.header("🇹🇼 台股三大法人資金流向")
@@ -201,7 +209,6 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
     
     col1, col2 = st.columns([1, 3])
     with col1:
-        # 讀取並更新記憶體中的單檔股票代號
         stock_id = st.text_input("輸入台股代號 (如: 3041, 2409)", st.session_state['diag_ticker']).strip()
         st.session_state['diag_ticker'] = stock_id
         analyze_btn = st.button("開始深度診斷")
@@ -313,7 +320,11 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 
                 st.markdown("#### ⚡ 短線沖銷與做空專屬雷達")
                 amp = latest['Amplitude']
-                if pd.notna(amp) and amp >= 4.0:
+                
+                # 【關鍵防護二】如果還是算不出振幅，優雅地顯示提示
+                if pd.isna(amp):
+                    st.warning("**【當沖/現沖建議】**：今日振幅資料暫時無法取得，可能是無交易或資料尚未更新。")
+                elif amp >= 4.0:
                     st.success(f"**【當沖/現沖建議】**：今日振幅達 {amp:.1f}%，波動活躍，極適合現沖操作。")
                 else:
                     st.warning(f"**【當沖/現沖建議】**：今日振幅僅 {amp:.1f}%，股價沉悶，當沖獲利空間小。")
