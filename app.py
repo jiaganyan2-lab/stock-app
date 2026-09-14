@@ -62,9 +62,9 @@ if option == "美股動向與 K 線分析":
                 
                 st.subheader("💡 系統推斷 (基於技術面)")
                 if recent_close > ma_20:
-                    st.success(f"**強勢格局**：{ticker} 目前收盤價高於 20 日均線，短期動能偏多。")
+                    st.success(f"**強勢格局**：{ticker} 目前收盤價高於 20 日均線（月線），短期趨勢【看漲】。")
                 else:
-                    st.warning(f"**弱勢整理**：{ticker} 目前收盤價低於 20 日均線，短期動能偏弱。")
+                    st.warning(f"**弱勢整理**：{ticker} 目前收盤價低於 20 日均線（月線），短期趨勢【看跌】。")
             else:
                 st.error("找不到該股票代號的資料。")
 
@@ -126,7 +126,6 @@ elif option == "個股技術面與籌碼綜合診斷":
             yf_ticker = f"{stock_id}.TW"
             df = yf.download(yf_ticker, period="6mo")
             
-            # 如果 .TW 找不到，試著找找看 .TWO (上櫃)
             if df.empty:
                 yf_ticker = f"{stock_id}.TWO"
                 df = yf.download(yf_ticker, period="6mo")
@@ -143,7 +142,6 @@ elif option == "個股技術面與籌碼綜合診斷":
                 
                 t86_data = fetch_twse_data()
                 if t86_data and t86_data.get('stat') == 'OK' and 'fields' in t86_data:
-                    # 【修正處】這裡加入了防呆機制 (-1)，找不到就不會當機
                     f_idx = next((i for i, f in enumerate(t86_data['fields']) if "代號" in f), -1)
                     n_idx = next((i for i, f in enumerate(t86_data['fields']) if "名稱" in f), -1)
                     idx_f = next((i for i, f in enumerate(t86_data['fields']) if "外資及陸資買賣超" in f or ("外" in f and "買賣超" in f and "自營" not in f)), -1)
@@ -236,71 +234,71 @@ elif option == "個股技術面與籌碼綜合診斷":
                 
                 if has_t86_data:
                     if foreign_buy > 0 and trust_buy > 0:
-                        bullish_reasons.append(f"籌碼：土洋同步買超 (外資 {foreign_buy:.0f}張, 投信 {trust_buy:.0f}張)。")
+                        bullish_reasons.append(f"大戶動向：外資與投信【同步大買】 (外資 {foreign_buy:.0f}張, 投信 {trust_buy:.0f}張)。")
                         score += 2
                     elif foreign_buy < 0 and trust_buy < 0:
-                        bearish_reasons.append(f"籌碼：土洋同步賣超 (外資 {foreign_buy:.0f}張, 投信 {trust_buy:.0f}張)。")
+                        bearish_reasons.append(f"大戶動向：外資與投信【同步大賣】 (外資 {foreign_buy:.0f}張, 投信 {trust_buy:.0f}張)。")
                         score -= 2
                     elif trust_buy > 0:
-                        bullish_reasons.append(f"籌碼：投信買超護盤 ({trust_buy:.0f}張)。")
+                        bullish_reasons.append(f"大戶動向：投信【買進護盤】 ({trust_buy:.0f}張)。")
                         score += 1
                     elif foreign_buy < 0:
-                        bearish_reasons.append(f"籌碼：外資提款賣超 ({foreign_buy:.0f}張)。")
+                        bearish_reasons.append(f"大戶動向：外資【賣出提款】 ({foreign_buy:.0f}張)。")
                         score -= 1
                 else:
-                    bullish_reasons.append("籌碼：今日無上市法人明顯進出 (或該檔為上櫃股票)。")
+                    bullish_reasons.append("大戶動向：今日無明顯進出 (或該檔為上櫃股票，需另外查詢)。")
 
                 if latest['Volume'] > latest['Vol_5MA'] * 1.5 and latest['Close'] > latest['Open']:
-                    bullish_reasons.append("量能：今日出量上漲 (大於5日均量1.5倍)，具攻擊企圖。")
+                    bullish_reasons.append("成交量：今日【出量上漲】 (比平常多1.5倍)，大家搶著買，容易繼續漲。")
                     score += 1
                 elif latest['Volume'] > latest['Vol_5MA'] * 1.5 and latest['Close'] < latest['Open']:
-                    bearish_reasons.append("量能：今日出量下跌 (大於5日均量1.5倍)，賣壓較重。")
+                    bearish_reasons.append("成交量：今日【出量下跌】 (比平常多1.5倍)，大家搶著賣，賣壓很重。")
                     score -= 1
 
                 if latest['MACD_Hist'] > 0 and df.iloc[-2]['MACD_Hist'] <= 0:
-                    bullish_reasons.append("MACD：柱狀圖翻紅，呈現黃金交叉。")
+                    bullish_reasons.append("MACD指標：出現【黃金交叉】，是剛開始起漲的訊號。")
                     score += 2
                 elif latest['MACD_Hist'] > 0:
-                    bullish_reasons.append("MACD：維持多頭格局。")
+                    bullish_reasons.append("MACD指標：維持【上漲趨勢】。")
                     score += 1
                 elif latest['MACD_Hist'] < 0 and df.iloc[-2]['MACD_Hist'] >= 0:
-                    bearish_reasons.append("MACD：柱狀圖翻綠，呈現死亡交叉。")
+                    bearish_reasons.append("MACD指標：出現【死亡交叉】，是剛開始起跌的訊號。")
                     score -= 2
                 else:
-                    bearish_reasons.append("MACD：維持空頭格局。")
+                    bearish_reasons.append("MACD指標：維持【下跌趨勢】。")
                     score -= 1
 
                 if latest['K'] > latest['D']:
-                    bullish_reasons.append("KD：K值大於D值，動能向上。")
+                    bullish_reasons.append("KD指標：K值大於D值，【短期動能向上】。")
                     score += 1
                 else:
-                    bearish_reasons.append("KD：K值小於D值，動能向下。")
+                    bearish_reasons.append("KD指標：K值小於D值，【短期動能向下】。")
                     score -= 1
 
                 if latest['RSI'] > 70:
-                    bearish_reasons.append(f"RSI：數值為 {latest['RSI']:.1f}，進入超買區，短線有回檔風險。")
+                    bearish_reasons.append(f"RSI指標：目前數值 {latest['RSI']:.1f}，代表漲太多【過熱了】，短時間內隨時可能跌下來。")
                     score -= 1
                 elif latest['RSI'] < 30:
-                    bullish_reasons.append(f"RSI：數值為 {latest['RSI']:.1f}，進入超賣區，醞釀反彈契機。")
+                    bullish_reasons.append(f"RSI指標：目前數值 {latest['RSI']:.1f}，代表跌太多【超賣了】，隨時有機會反彈。")
                     score += 1
 
                 if latest['Close'] > latest['BB_Upper']:
-                    bearish_reasons.append("布林：股價突破上軌，乖離過大易拉回。")
+                    bearish_reasons.append("布林通道：股價漲破天花板(上軌)，衝太快容易被拉回。")
                     score -= 1
                 elif latest['Close'] < latest['BB_Lower']:
-                    bullish_reasons.append("布林：股價跌破下軌，可能出現跌深反彈。")
+                    bullish_reasons.append("布林通道：股價跌破地板(下軌)，跌深了準備反彈。")
                     score += 1
 
                 col_res1, col_res2 = st.columns(2)
                 with col_res1:
-                    st.success("🟢 偏多訊號\n\n" + "\n\n".join([f"- {r}" for r in bullish_reasons]) if bullish_reasons else "無明顯偏多訊號")
+                    st.success("🟢 看漲訊號 (有利上漲)\n\n" + "\n\n".join([f"- {r}" for r in bullish_reasons]) if bullish_reasons else "無明顯看漲訊號")
                 with col_res2:
-                    st.error("🔴 偏空訊號\n\n" + "\n\n".join([f"- {r}" for r in bearish_reasons]) if bearish_reasons else "無明顯偏空訊號")
+                    st.error("🔴 看跌訊號 (容易下跌)\n\n" + "\n\n".join([f"- {r}" for r in bearish_reasons]) if bearish_reasons else "無明顯看跌訊號")
 
                 st.markdown("### 📊 最終推斷結論")
                 if score >= 3:
-                    st.info("**強烈建議偏多看待 (Buy)**：技術面與籌碼面產生共鳴，多方勝率較高，可尋找突破點進場。")
+                    st.info("**⭐ 適合尋找買點 (強勢看漲)**：技術面與大戶動向都表現很好，上漲機會高，可考慮進場買進。")
                 elif 0 <= score < 3:
-                    st.warning("**建議觀望或區間操作 (Hold)**：多空力道拉扯，無絕對方向，可利用布林通道上下軌做短線低買高賣。")
+                    st.warning("**👀 建議暫時觀望 (持平整理)**：目前看漲與看跌的訊號互相抵銷，沒有明顯方向。建議先不要有大動作，或是等跌到低點再買。")
                 else:
-                    st.error("**建議偏空看待或避開 (Sell/Short)**：技術指標轉弱且法人未見支持，若持有多單建議分批減碼。")
+                    st.error("**⚠️ 建議避開或賣出 (弱勢看跌)**：各項指標都轉弱，且大戶沒有支持，股價容易繼續跌。如果手上有股票，建議考慮分批賣出；還沒買的建議先避開。")
