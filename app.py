@@ -95,7 +95,7 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
             
             st.markdown("---")
             st.subheader("📊 關鍵指標 K 線圖")
-            selected_ticker = st.selectbox("選擇要查看技術線圖的指標", ["TSM", "NVDA", "AAPL", "AMD", "SOXX"])
+            selected_ticker = st.selectbox("選擇要查看技術線圖的指標", ["TSM", "NVDA", "AAPL", "AMD", "SOX"])
             
             t_chart = yf.Ticker(selected_ticker)
             data = t_chart.history(period="6mo")
