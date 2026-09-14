@@ -26,7 +26,7 @@ option = st.sidebar.selectbox(
     )
 )
 
-# ================= 核心快取與工具函式 =================
+# ================= 核心快取與工具函式 (全新升級強固版) =================
 @st.cache_data(ttl=3600)
 def fetch_twse_data():
     url = "https://www.twse.com.tw/fund/T86?response=json"
@@ -41,37 +41,41 @@ def fetch_twse_data():
 
 @st.cache_data(ttl=900)
 def fetch_us_macro():
+    """使用更穩定的 history 抓取美股指標"""
     tickers_list = ["TSM", "NVDA", "AAPL", "AMD", "SOXX"]
     results = {}
     sentiment_score = 0
     try:
-        df = yf.download(tickers_list, period="5d")
         for t in tickers_list:
-            if isinstance(df.columns, pd.MultiIndex):
-                prev_close = df['Close'][t].iloc[-2]
-                curr_close = df['Close'][t].iloc[-1]
-            else:
-                prev_close = df['Close'].iloc[-2]
-                curr_close = df['Close'].iloc[-1]
-            pct_change = ((curr_close - prev_close) / prev_close) * 100
-            results[t] = {"price": curr_close, "pct": pct_change}
-            if t in ["TSM", "NVDA", "SOXX"]:
-                sentiment_score += pct_change
+            ticker = yf.Ticker(t)
+            df = ticker.history(period="5d")
+            if len(df) >= 2:
+                prev_close = float(df['Close'].iloc[-2])
+                curr_close = float(df['Close'].iloc[-1])
+                pct_change = ((curr_close - prev_close) / prev_close) * 100
+                results[t] = {"price": curr_close, "pct": pct_change}
+                if t in ["TSM", "NVDA", "SOXX"]:
+                    sentiment_score += pct_change
     except:
         pass
     return results, sentiment_score
 
 @st.cache_data(ttl=600)
 def get_stock_data(stock_id):
-    """自動判斷上市或上櫃，抓取歷史資料，並過濾掉空白的幽靈數據"""
-    df = yf.download(f"{stock_id}.TW", period="6mo")
+    """全面改用 history，解決延遲與欄位錯亂 bug，並確保時區與空值安全"""
+    t = yf.Ticker(f"{stock_id}.TW")
+    df = t.history(period="6mo")
     if df.empty:
-        df = yf.download(f"{stock_id}.TWO", period="6mo")
+        t = yf.Ticker(f"{stock_id}.TWO")
+        df = t.history(period="6mo")
+    
     if not df.empty:
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        # 【關鍵防護一】剔除沒有收盤價的幽靈行，避免產生 NaN
+        # 強制移除時區，防止 Plotly 繪圖崩潰
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        # 嚴格過濾無法使用的幽靈空值
         df.dropna(subset=['Close'], inplace=True)
+        df['Volume'] = df['Volume'].fillna(0)
     return df
 
 # ==========================================
@@ -92,11 +96,13 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
             st.subheader("📊 關鍵指標 K 線圖")
             selected_ticker = st.selectbox("選擇要查看技術線圖的指標", ["TSM", "NVDA", "AAPL", "AMD", "SOXX"])
             
-            data = yf.download(selected_ticker, period="6mo")
+            t_chart = yf.Ticker(selected_ticker)
+            data = t_chart.history(period="6mo")
             if not data.empty:
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
+                if data.index.tz is not None:
+                    data.index = data.index.tz_localize(None)
                 data.dropna(subset=['Close'], inplace=True)
+                
                 fig = go.Figure(data=[go.Candlestick(x=data.index,
                                 open=data['Open'], high=data['High'],
                                 low=data['Low'], close=data['Close'], name="K線",
@@ -130,21 +136,24 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                 if not df.empty and len(df) > 20:
                     latest = df.iloc[-1]
                     prev = df.iloc[-2]
+                    latest_date_str = df.index[-1].strftime("%Y-%m-%d")
                     
                     pct_change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
                     amplitude = ((latest['High'] - latest['Low']) / prev['Close']) * 100
-                    # 防呆：如果振幅是 NaN，強制補 0
-                    if pd.isna(amplitude):
+                    
+                    if pd.isna(amplitude) or np.isinf(amplitude):
                         amplitude = 0.0
                         
                     ma20 = df['Close'].rolling(20).mean().iloc[-1]
-                    vol_ratio = latest['Volume'] / df['Volume'].rolling(5).mean().iloc[-1] if df['Volume'].rolling(5).mean().iloc[-1] > 0 else 0
+                    vol_5ma = df['Volume'].rolling(5).mean().iloc[-1]
+                    vol_ratio = (latest['Volume'] / vol_5ma) if (pd.notna(vol_5ma) and vol_5ma > 0) else 0.0
                     
                     trend = "🟢 偏多" if latest['Close'] > ma20 else "🔴 偏空"
                     day_trade = "🔥 極佳" if amplitude >= 4.0 and vol_ratio >= 1.2 else "💤 沉悶"
                     
                     scan_results.append({
                         "股票代號": sid,
+                        "資料日期": latest_date_str,
                         "最新收盤價": f"{latest['Close']:.2f}",
                         "漲跌幅 (%)": pct_change,
                         "今日振幅 (%)": amplitude,
@@ -163,7 +172,7 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                     "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f")
                 }
             )
-            st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表今日主力交投熱絡，極度適合短線或現沖操作。")
+            st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表主力交投熱絡，極適合短線操作。")
 
 # ==========================================
 # 功能三：台股三大法人資金流向
@@ -221,8 +230,9 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
             if df.empty:
                 st.error(f"找不到代號 {stock_id} 的股價資料，請確認是否輸入正確。")
             else:
-                df['Volume'] = df['Volume'].fillna(0)
                 stock_name = stock_id
+                latest_date_str = df.index[-1].strftime("%Y-%m-%d")
+                
                 foreign_buy, trust_buy, dealer_buy = 0, 0, 0
                 has_t86_data = False
                 
@@ -287,8 +297,8 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 fig.add_trace(go.Scatter(x=df.index, y=df['20MA'], line=dict(color='orange', width=2), name='20MA (月線)'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=df.index, y=df['60MA'], line=dict(color='blue', width=2, dash='dash'), name='60MA (季線)'), row=1, col=1)
                 
-                fig.add_hline(y=recent_res, line_dash="dash", line_color="red", annotation_text="壓力線 (近20日高點)", row=1, col=1)
-                fig.add_hline(y=recent_sup, line_dash="dash", line_color="lightgreen", annotation_text="支撐線 (近20日低點)", row=1, col=1)
+                fig.add_hline(y=recent_res, line_dash="dash", line_color="red", annotation_text="壓力線", row=1, col=1)
+                fig.add_hline(y=recent_sup, line_dash="dash", line_color="lightgreen", annotation_text="支撐線", row=1, col=1)
                 
                 latest_close = df['Close'].iloc[-1]
                 fig.add_annotation(x=df.index[-1], y=latest_close, text=f"<b>{latest_close:.2f}</b>",
@@ -313,7 +323,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader(f"🤖 {stock_id} {stock_name} - 綜合診斷報告")
+                st.subheader(f"🤖 {stock_id} {stock_name} - 綜合診斷報告 (資料日期: {latest_date_str})")
                 
                 latest = df.iloc[-1]
                 score = 0
@@ -321,9 +331,8 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 st.markdown("#### ⚡ 短線沖銷與做空專屬雷達")
                 amp = latest['Amplitude']
                 
-                # 【關鍵防護二】如果還是算不出振幅，優雅地顯示提示
-                if pd.isna(amp):
-                    st.warning("**【當沖/現沖建議】**：今日振幅資料暫時無法取得，可能是無交易或資料尚未更新。")
+                if pd.isna(amp) or np.isinf(amp):
+                    st.warning("**【當沖/現沖建議】**：今日振幅資料暫無法運算 (無波動或資料不足)。")
                 elif amp >= 4.0:
                     st.success(f"**【當沖/現沖建議】**：今日振幅達 {amp:.1f}%，波動活躍，極適合現沖操作。")
                 else:
