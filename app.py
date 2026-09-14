@@ -146,14 +146,14 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                         "現沖/當沖推薦": day_trade
                     })
         
-       if scan_results:
+      if scan_results:
             res_df = pd.DataFrame(scan_results)
             st.dataframe(
                 res_df,
                 use_container_width=True,
                 column_config={
-                    "漲跌幅 (%)": st.column_config.NumberColumn("漲跌幅 (%)", format="%+.2f %%"),
-                    "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f %%")
+                    "漲跌幅 (%)": st.column_config.NumberColumn("漲跌幅 (%)", format="%+.2f"),
+                    "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f")
                 }
             )
             st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表今日主力交投熱絡，極度適合短線或現沖操作。")
