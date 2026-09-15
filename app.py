@@ -26,7 +26,7 @@ option = st.sidebar.selectbox(
     )
 )
 
-# ================= 核心快取與工具函式 (全新升級強固版) =================
+# ================= 核心快取與工具函式 =================
 @st.cache_data(ttl=3600)
 def fetch_twse_data():
     url = "https://www.twse.com.tw/fund/T86?response=json"
@@ -41,7 +41,6 @@ def fetch_twse_data():
 
 @st.cache_data(ttl=900)
 def fetch_us_macro():
-    """使用更穩定的 history 抓取美股指標"""
     tickers_list = ["TSM", "NVDA", "AAPL", "AMD", "SOXX"]
     results = {}
     sentiment_score = 0
@@ -62,7 +61,6 @@ def fetch_us_macro():
 
 @st.cache_data(ttl=600)
 def get_stock_data(stock_id):
-    """全面改用 history，解決延遲與欄位錯亂 bug，並確保時區與空值安全"""
     t = yf.Ticker(f"{stock_id}.TW")
     df = t.history(period="6mo")
     if df.empty:
@@ -70,10 +68,8 @@ def get_stock_data(stock_id):
         df = t.history(period="6mo")
     
     if not df.empty:
-        # 強制移除時區，防止 Plotly 繪圖崩潰
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
-        # 嚴格過濾無法使用的幽靈空值
         df.dropna(subset=['Close'], inplace=True)
         df['Volume'] = df['Volume'].fillna(0)
     return df
@@ -130,7 +126,7 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
         stocks = [s.strip() for s in user_input.split(',')]
         scan_results = []
         
-        with st.spinner("雷達掃描中，請稍候..."):
+        with st.spinner("雷達掃描與價格計算中，請稍候..."):
             for sid in stocks:
                 df = get_stock_data(sid)
                 if not df.empty and len(df) > 20:
@@ -175,13 +171,13 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
             st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表主力交投熱絡，極適合短線操作。")
 
 # ==========================================
-# 功能三：台股三大法人資金流向
+# 功能三：台股三大法人資金流向 (加入即時價格連動)
 # ==========================================
 elif option == "3. 台股三大法人資金流向":
     st.header("🇹🇼 台股三大法人資金流向")
-    st.write("直接讀取快取中的台灣證券交易所（TWSE）三大法人買賣超資料。")
+    st.write("直接讀取快取中的台灣證券交易所（TWSE）三大法人買賣超資料，並連動最新報價。")
     
-    with st.spinner('嘗試連線證交所讀取資料中...'):
+    with st.spinner('嘗試連線證交所讀取資料並結合最新股價...'):
         data = fetch_twse_data()
         if data and data.get('stat') == 'OK' and 'fields' in data and 'data' in data:
             fields = data['fields']
@@ -202,11 +198,50 @@ elif option == "3. 台股三大法人資金流向":
                     '自營商買賣超(張)': pd.to_numeric(df[idx_dealer].astype(str).str.replace(',', ''), errors='coerce').fillna(0) / 1000
                 })
                 df_clean['三大法人合計(張)'] = df_clean['外資買賣超(張)'] + df_clean['投信買賣超(張)'] + df_clean['自營商買賣超(張)']
-                df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15)
-                st.dataframe(df_filtered.style.format({
-                    '外資買賣超(張)': '{:,.0f}', '投信買賣超(張)': '{:,.0f}',
-                    '自營商買賣超(張)': '{:,.0f}', '三大法人合計(張)': '{:,.0f}'
-                }), use_container_width=True)
+                
+                # 取得前 15 名大戶買超排行
+                df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15).copy()
+                
+                # 【新增】自動批次抓取這 15 檔的最新收盤價與漲跌幅
+                prices, pcts = [], []
+                for code in df_filtered['股票代號']:
+                    try:
+                        t = yf.Ticker(f"{code}.TW")
+                        hist = t.history(period="5d")
+                        if len(hist) >= 2:
+                            curr = float(hist['Close'].iloc[-1])
+                            prev = float(hist['Close'].iloc[-2])
+                            prices.append(curr)
+                            pcts.append(((curr - prev) / prev) * 100)
+                        else:
+                            prices.append(np.nan)
+                            pcts.append(np.nan)
+                    except:
+                        prices.append(np.nan)
+                        pcts.append(np.nan)
+                
+                df_filtered['最新收盤價'] = prices
+                df_filtered['漲跌幅 (%)'] = pcts
+                
+                # 重新排列欄位順序，讓價格跟漲跌幅排在前面
+                cols = df_filtered.columns.tolist()
+                cols = cols[:2] + ['最新收盤價', '漲跌幅 (%)'] + cols[2:-2]
+                df_filtered = df_filtered[cols]
+                
+                # 格式化輸出表格
+                st.dataframe(
+                    df_filtered,
+                    use_container_width=True,
+                    column_config={
+                        "最新收盤價": st.column_config.NumberColumn("最新收盤價", format="$%.2f"),
+                        "漲跌幅 (%)": st.column_config.NumberColumn("漲跌幅 (%)", format="%+.2f"),
+                        "外資買賣超(張)": st.column_config.NumberColumn(format="%.0f"),
+                        "投信買賣超(張)": st.column_config.NumberColumn(format="%.0f"),
+                        "自營商買賣超(張)": st.column_config.NumberColumn(format="%.0f"),
+                        "三大法人合計(張)": st.column_config.NumberColumn(format="%.0f")
+                    }
+                )
+                st.caption("💡 現在可以直接對照大戶買超張數與今日的實際漲跌幅，判斷買盤是否有實質推升股價。")
         else:
             st.error("⚠️ 無法取得證交所資料。這通常是因為台灣證交所的防火牆機制，暫時阻擋了雲端主機的海外 IP，或是目前為盤後資料更新空檔。")
 
@@ -233,31 +268,40 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 stock_name = stock_id
                 latest_date_str = df.index[-1].strftime("%Y-%m-%d")
                 
+                # 【新增】擷取最新價格並放置顯眼的儀表板
+                latest_px = df['Close'].iloc[-1]
+                prev_px = df['Close'].iloc[-2]
+                pct_change = ((latest_px - prev_px) / prev_px) * 100
+                
+                # 自動找尋真實股票名稱
+                try:
+                    info = yf.Ticker(f"{stock_id}.TW").info
+                    stock_name = info.get('shortName', stock_id)
+                except:
+                    pass
+                
+                st.markdown("---")
+                # 放置戰情大儀表板
+                st.metric(label=f"📊 {stock_id} {stock_name} 今日最新報價 (資料日期: {latest_date_str})", 
+                          value=f"${latest_px:.2f}", 
+                          delta=f"{pct_change:+.2f}%")
+                
                 foreign_buy, trust_buy, dealer_buy = 0, 0, 0
                 has_t86_data = False
                 
                 t86_data = fetch_twse_data()
                 if t86_data and t86_data.get('stat') == 'OK' and 'fields' in t86_data:
                     f_idx = next((i for i, f in enumerate(t86_data['fields']) if "代號" in f), -1)
-                    n_idx = next((i for i, f in enumerate(t86_data['fields']) if "名稱" in f), -1)
                     idx_f = next((i for i, f in enumerate(t86_data['fields']) if "外資及陸資買賣超" in f or ("外" in f and "買賣超" in f and "自營" not in f)), -1)
                     idx_t = next((i for i, f in enumerate(t86_data['fields']) if "投信" in f and "買賣超" in f), -1)
                     
-                    if -1 not in [f_idx, n_idx, idx_f, idx_t]:
+                    if -1 not in [f_idx, idx_f, idx_t]:
                         for row in t86_data['data']:
                             if row[f_idx] == stock_id:
-                                stock_name = row[n_idx]
                                 foreign_buy = float(row[idx_f].replace(',', '')) / 1000
                                 trust_buy = float(row[idx_t].replace(',', '')) / 1000
                                 has_t86_data = True
                                 break
-                
-                if stock_name == stock_id:
-                    try:
-                        info = yf.Ticker(f"{stock_id}.TW").info
-                        stock_name = info.get('shortName', stock_id)
-                    except:
-                        pass
 
                 df['5MA'] = df['Close'].rolling(window=5).mean()
                 df['20MA'] = df['Close'].rolling(window=20).mean()
@@ -288,7 +332,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
 
                 fig = make_subplots(rows=5, cols=1, shared_xaxes=True, 
                                     vertical_spacing=0.02, row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
-                                    subplot_titles=(f"{stock_id} {stock_name} - 股價與支撐壓力", "成交量", "MACD", "KD", "RSI"))
+                                    subplot_titles=("股價與支撐壓力", "成交量", "MACD", "KD", "RSI"))
                 
                 fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
                                              name='K線', increasing_line_color='red', increasing_fillcolor='red',
@@ -299,10 +343,6 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 
                 fig.add_hline(y=recent_res, line_dash="dash", line_color="red", annotation_text="壓力線", row=1, col=1)
                 fig.add_hline(y=recent_sup, line_dash="dash", line_color="lightgreen", annotation_text="支撐線", row=1, col=1)
-                
-                latest_close = df['Close'].iloc[-1]
-                fig.add_annotation(x=df.index[-1], y=latest_close, text=f"<b>{latest_close:.2f}</b>",
-                                   showarrow=True, arrowhead=2, ax=40, ay=0, bgcolor="gold", font=dict(color="black", size=13), row=1, col=1)
                 
                 vol_colors = ['red' if df['Close'].iloc[i] >= df['Open'].iloc[i] else 'green' for i in range(len(df))]
                 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_colors, name='成交量'), row=2, col=1)
@@ -323,7 +363,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader(f"🤖 {stock_id} {stock_name} - 綜合診斷報告 (資料日期: {latest_date_str})")
+                st.subheader("🤖 系統綜合診斷報告")
                 
                 latest = df.iloc[-1]
                 score = 0
