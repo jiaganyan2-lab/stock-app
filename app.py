@@ -5,12 +5,12 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import re # 新增正規表達式套件，用來解析網頁
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="全球股市與籌碼推斷系統", layout="wide")
 st.title("📈 股市資金流向與專業推斷系統")
 
-# ================= 賦予網頁記憶力 (Session State) =================
 if 'watchlist' not in st.session_state:
     st.session_state['watchlist'] = "3259, 6233, 3041, 8024, 5244, 2409, 2329, 2401, 8150"
 if 'diag_ticker' not in st.session_state:
@@ -74,6 +74,23 @@ def get_stock_data(stock_id):
         df['Volume'] = df['Volume'].fillna(0)
     return df
 
+# 【全新加入】台灣 Yahoo 股市即時爬蟲引擎 (每 60 秒快取一次，保證盤中即時)
+@st.cache_data(ttl=60)
+def get_realtime_quote(stock_id):
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        res = requests.get(url, headers=headers, timeout=3)
+        # 爬取網頁標題中的即時價格，格式如: "旺玖 (6233) 30.50 漲幅 1.50% - Yahoo奇摩股市"
+        match = re.search(rf'\({stock_id}\)\s+([0-9,.]+)\s+[^0-9+-]*([+-]?[0-9,.]+)%', res.text)
+        if match:
+            price = float(match.group(1).replace(',', ''))
+            pct = float(match.group(2).replace(',', ''))
+            return price, pct
+    except:
+        pass
+    return None, None
+
 # ==========================================
 # 功能一：美股動向與國際局勢
 # ==========================================
@@ -116,8 +133,8 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
 # 功能二：自選股雷達掃描
 # ==========================================
 elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
-    st.header("🎯 自選股雷達掃描 (快速戰情室)")
-    st.write("自動掃描預設口袋名單，找出今日波動最大、最適合操作的標的。")
+    st.header("🎯 自選股雷達掃描 (盤中即時戰情室)")
+    st.write("掃描預設口袋名單，結合 **Yahoo 奇摩股市即時報價**，找出今日波動最大的標的。")
     
     user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", st.session_state['watchlist'])
     st.session_state['watchlist'] = user_input
@@ -126,31 +143,38 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
         stocks = [s.strip() for s in user_input.split(',')]
         scan_results = []
         
-        with st.spinner("雷達掃描與價格計算中，請稍候..."):
+        with st.spinner("啟動即時爬蟲，抓取最新股價中..."):
             for sid in stocks:
                 df = get_stock_data(sid)
                 if not df.empty and len(df) > 20:
-                    latest = df.iloc[-1]
                     prev = df.iloc[-2]
-                    latest_date_str = df.index[-1].strftime("%Y-%m-%d")
                     
-                    pct_change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
-                    amplitude = ((latest['High'] - latest['Low']) / prev['Close']) * 100
+                    # 啟動新引擎：嘗試抓取盤中即時報價
+                    rt_price, rt_pct = get_realtime_quote(sid)
+                    
+                    # 如果成功抓到即時報價，就用即時的；如果抓不到(例如斷線)，就退回使用美國歷史庫的資料
+                    if rt_price is not None and rt_pct is not None:
+                        current_px = rt_price
+                        pct_change = rt_pct
+                        amplitude = ((df['High'].iloc[-1] - df['Low'].iloc[-1]) / prev['Close']) * 100 
+                    else:
+                        current_px = df['Close'].iloc[-1]
+                        pct_change = ((current_px - prev['Close']) / prev['Close']) * 100
+                        amplitude = ((df['High'].iloc[-1] - df['Low'].iloc[-1]) / prev['Close']) * 100
                     
                     if pd.isna(amplitude) or np.isinf(amplitude):
                         amplitude = 0.0
                         
                     ma20 = df['Close'].rolling(20).mean().iloc[-1]
                     vol_5ma = df['Volume'].rolling(5).mean().iloc[-1]
-                    vol_ratio = (latest['Volume'] / vol_5ma) if (pd.notna(vol_5ma) and vol_5ma > 0) else 0.0
+                    vol_ratio = (df['Volume'].iloc[-1] / vol_5ma) if (pd.notna(vol_5ma) and vol_5ma > 0) else 0.0
                     
-                    trend = "🟢 偏多" if latest['Close'] > ma20 else "🔴 偏空"
+                    trend = "🟢 偏多" if current_px > ma20 else "🔴 偏空"
                     day_trade = "🔥 極佳" if amplitude >= 4.0 and vol_ratio >= 1.2 else "💤 沉悶"
                     
                     scan_results.append({
                         "股票代號": sid,
-                        "資料日期": latest_date_str,
-                        "最新收盤價": f"{latest['Close']:.2f}",
+                        "即時報價": f"{current_px:.2f}",
                         "漲跌幅 (%)": pct_change,
                         "今日振幅 (%)": amplitude,
                         "成交量爆發比": f"{vol_ratio:.1f}倍",
@@ -168,16 +192,16 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                     "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f")
                 }
             )
-            st.caption("💡 提示：【今日振幅】大於 4% 且【成交量爆發比】大於 1.2 倍的標的，代表主力交投熱絡，極適合短線操作。")
+            st.caption("💡 提示：此頁面已掛載 Yahoo 奇摩股市即時爬蟲，盤中報價每 60 秒更新一次。")
 
 # ==========================================
-# 功能三：台股三大法人資金流向 (加入即時價格連動)
+# 功能三：台股三大法人資金流向
 # ==========================================
 elif option == "3. 台股三大法人資金流向":
     st.header("🇹🇼 台股三大法人資金流向")
-    st.write("直接讀取快取中的台灣證券交易所（TWSE）三大法人買賣超資料，並連動最新報價。")
+    st.write("抓取證交所籌碼資料，並連動 **盤中即時報價** 判斷強弱。")
     
-    with st.spinner('嘗試連線證交所讀取資料並結合最新股價...'):
+    with st.spinner('連線證交所與即時報價伺服器...'):
         data = fetch_twse_data()
         if data and data.get('stat') == 'OK' and 'fields' in data and 'data' in data:
             fields = data['fields']
@@ -199,41 +223,31 @@ elif option == "3. 台股三大法人資金流向":
                 })
                 df_clean['三大法人合計(張)'] = df_clean['外資買賣超(張)'] + df_clean['投信買賣超(張)'] + df_clean['自營商買賣超(張)']
                 
-                # 取得前 15 名大戶買超排行
                 df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15).copy()
                 
-                # 【新增】自動批次抓取這 15 檔的最新收盤價與漲跌幅
+                # 使用新引擎取得前 15 名的即時股價
                 prices, pcts = [], []
                 for code in df_filtered['股票代號']:
-                    try:
-                        t = yf.Ticker(f"{code}.TW")
-                        hist = t.history(period="5d")
-                        if len(hist) >= 2:
-                            curr = float(hist['Close'].iloc[-1])
-                            prev = float(hist['Close'].iloc[-2])
-                            prices.append(curr)
-                            pcts.append(((curr - prev) / prev) * 100)
-                        else:
-                            prices.append(np.nan)
-                            pcts.append(np.nan)
-                    except:
+                    rt_price, rt_pct = get_realtime_quote(code)
+                    if rt_price is not None:
+                        prices.append(rt_price)
+                        pcts.append(rt_pct)
+                    else:
                         prices.append(np.nan)
                         pcts.append(np.nan)
                 
-                df_filtered['最新收盤價'] = prices
+                df_filtered['即時報價'] = prices
                 df_filtered['漲跌幅 (%)'] = pcts
                 
-                # 重新排列欄位順序，讓價格跟漲跌幅排在前面
                 cols = df_filtered.columns.tolist()
-                cols = cols[:2] + ['最新收盤價', '漲跌幅 (%)'] + cols[2:-2]
+                cols = cols[:2] + ['即時報價', '漲跌幅 (%)'] + cols[2:-2]
                 df_filtered = df_filtered[cols]
                 
-                # 格式化輸出表格
                 st.dataframe(
                     df_filtered,
                     use_container_width=True,
                     column_config={
-                        "最新收盤價": st.column_config.NumberColumn("最新收盤價", format="$%.2f"),
+                        "即時報價": st.column_config.NumberColumn("即時報價", format="$%.2f"),
                         "漲跌幅 (%)": st.column_config.NumberColumn("漲跌幅 (%)", format="%+.2f"),
                         "外資買賣超(張)": st.column_config.NumberColumn(format="%.0f"),
                         "投信買賣超(張)": st.column_config.NumberColumn(format="%.0f"),
@@ -241,9 +255,8 @@ elif option == "3. 台股三大法人資金流向":
                         "三大法人合計(張)": st.column_config.NumberColumn(format="%.0f")
                     }
                 )
-                st.caption("💡 現在可以直接對照大戶買超張數與今日的實際漲跌幅，判斷買盤是否有實質推升股價。")
         else:
-            st.error("⚠️ 無法取得證交所資料。這通常是因為台灣證交所的防火牆機制，暫時阻擋了雲端主機的海外 IP，或是目前為盤後資料更新空檔。")
+            st.error("⚠️ 無法取得證交所資料。")
 
 # ==========================================
 # 功能四：個股技術面與籌碼綜合診斷
@@ -258,22 +271,27 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
         analyze_btn = st.button("開始深度診斷")
     
     if analyze_btn:
-        with st.spinner("計算技術指標、繪製支撐壓力與比對籌碼中..."):
+        with st.spinner("計算技術指標與連線即時報價中..."):
             _, global_sentiment = fetch_us_macro()
             df = get_stock_data(stock_id)
 
             if df.empty:
-                st.error(f"找不到代號 {stock_id} 的股價資料，請確認是否輸入正確。")
+                st.error(f"找不到代號 {stock_id} 的股價資料。")
             else:
                 stock_name = stock_id
-                latest_date_str = df.index[-1].strftime("%Y-%m-%d")
+                # 啟動新引擎獲取真正即時的價格
+                rt_price, rt_pct = get_realtime_quote(stock_id)
                 
-                # 【新增】擷取最新價格並放置顯眼的儀表板
-                latest_px = df['Close'].iloc[-1]
-                prev_px = df['Close'].iloc[-2]
-                pct_change = ((latest_px - prev_px) / prev_px) * 100
+                if rt_price is not None and rt_pct is not None:
+                    latest_px = rt_price
+                    pct_change = rt_pct
+                    tag = "⚡ 盤中即時"
+                else:
+                    latest_px = df['Close'].iloc[-1]
+                    prev_px = df['Close'].iloc[-2]
+                    pct_change = ((latest_px - prev_px) / prev_px) * 100
+                    tag = "📅 歷史收盤"
                 
-                # 自動找尋真實股票名稱
                 try:
                     info = yf.Ticker(f"{stock_id}.TW").info
                     stock_name = info.get('shortName', stock_id)
@@ -281,8 +299,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                     pass
                 
                 st.markdown("---")
-                # 放置戰情大儀表板
-                st.metric(label=f"📊 {stock_id} {stock_name} 今日最新報價 (資料日期: {latest_date_str})", 
+                st.metric(label=f"📊 {stock_id} {stock_name} 最新報價 ({tag})", 
                           value=f"${latest_px:.2f}", 
                           delta=f"{pct_change:+.2f}%")
                 
@@ -372,16 +389,16 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 amp = latest['Amplitude']
                 
                 if pd.isna(amp) or np.isinf(amp):
-                    st.warning("**【當沖/現沖建議】**：今日振幅資料暫無法運算 (無波動或資料不足)。")
+                    st.warning("**【當沖/現沖建議】**：今日振幅資料暫無法運算。")
                 elif amp >= 4.0:
                     st.success(f"**【當沖/現沖建議】**：今日振幅達 {amp:.1f}%，波動活躍，極適合現沖操作。")
                 else:
                     st.warning(f"**【當沖/現沖建議】**：今日振幅僅 {amp:.1f}%，股價沉悶，當沖獲利空間小。")
                 
-                if latest['Close'] < latest['20MA'] and latest['Close'] < latest['60MA']:
-                    st.error("**【做空/借券警示】**：股價已跌破月線與季線，趨勢明顯走空。若跌破下方綠色支撐線，可考慮順勢放空或留意借券賣出建倉機會。")
+                if latest_px < latest['20MA'] and latest_px < latest['60MA']:
+                    st.error("**【做空/借券警示】**：最新股價已跌破月線與季線，趨勢走空。可留意借券賣出或放空建倉機會。")
                 else:
-                    st.info("**【做空/借券警示】**：目前股價仍具備均線支撐，做空風險較高，建議以做多或觀望為主。")
+                    st.info("**【做空/借券警示】**：目前股價仍具備均線支撐，做空風險較高，建議觀望為主。")
                 
                 st.markdown("#### 🧭 多空趨勢總體檢")
                 bullish_reasons = []
