@@ -60,37 +60,32 @@ def fetch_us_macro():
         pass
     return results, sentiment_score
 
-@st.cache_data(ttl=600)
-def get_stock_data(stock_id):
-    t = yf.Ticker(f"{stock_id}.TW")
-    df = t.history(period="6mo")
-    if df.empty:
-        t = yf.Ticker(f"{stock_id}.TWO")
-        df = t.history(period="6mo")
-    
-    if not df.empty:
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        df.dropna(subset=['Close'], inplace=True)
-        df['Volume'] = df['Volume'].fillna(0)
-    return df
-
-# 【終極防護雙引擎】100% 確保抓到即時報價，無視國外 IP 阻擋！
+# 【升級】抓取即時的完整 K 線元素 (開、高、低、收、量)
 @st.cache_data(ttl=60)
-def get_realtime_quote(stock_id):
-    # 引擎 1: Yahoo 奇摩股市 (強力解碼底層 JSON)
+def get_realtime_candle(stock_id):
+    # 引擎 1: Yahoo JSON API
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
-        res = requests.get(url, headers=headers, timeout=3)
-        price_match = re.search(r'"regularMarketPrice":(?:{"raw":)?([0-9.]+)', res.text)
-        pct_match = re.search(r'"regularMarketChangePercent":(?:{"raw":)?([-+]?[0-9.]+)', res.text)
-        if price_match and pct_match:
-            return float(price_match.group(1)), float(pct_match.group(1))
+        for suffix in [".TW", ".TWO"]:
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={stock_id}{suffix}"
+            res = requests.get(url, headers=headers, timeout=3)
+            data = res.json()
+            if data.get('quoteResponse', {}).get('result'):
+                quote = data['quoteResponse']['result'][0]
+                price = quote.get('regularMarketPrice')
+                if price:
+                    return {
+                        'Close': float(price),
+                        'Open': float(quote.get('regularMarketOpen', price)),
+                        'High': float(quote.get('regularMarketDayHigh', price)),
+                        'Low': float(quote.get('regularMarketDayLow', price)),
+                        'Volume': float(quote.get('regularMarketVolume', 0)),
+                        'Pct': float(quote.get('regularMarketChangePercent', 0.0))
+                    }
     except:
         pass
 
-    # 引擎 2: 台灣證交所 / 櫃買中心官方 API (終極備援)
+    # 引擎 2: 台灣證交所/櫃買中心官方直連
     try:
         ts = int(time.time() * 1000)
         for ex in ['tse', 'otc']:
@@ -99,18 +94,66 @@ def get_realtime_quote(stock_id):
             data = res.json()
             if data.get('msgArray'):
                 info = data['msgArray'][0]
-                if info.get('y'):
-                    yest = float(info['y'])
-                    if info.get('z') and info.get('z') != '-':
-                        price = float(info['z'])
-                    else:
-                        price = yest
-                    pct = ((price - yest) / yest) * 100
-                    return price, pct
+                price_str = info.get('z') if info.get('z') and info.get('z') != '-' else info.get('y')
+                if not price_str: continue
+                price = float(price_str)
+                yest = float(info.get('y', price))
+                pct = ((price - yest) / yest * 100) if yest else 0.0
+                
+                def parse_f(val, fallback):
+                    try: return float(val) if val != '-' else fallback
+                    except: return fallback
+                    
+                return {
+                    'Close': price,
+                    'Open': parse_f(info.get('o'), price),
+                    'High': parse_f(info.get('h'), price),
+                    'Low': parse_f(info.get('l'), price),
+                    'Volume': parse_f(info.get('v'), 0) * 1000, # 證交所單位是張，轉為股
+                    'Pct': pct
+                }
     except:
         pass
+    return None
+
+# 【核心手術】將即時 K 線完美縫合進歷史 DataFrame
+@st.cache_data(ttl=60)
+def get_stock_data_with_rt(stock_id):
+    t = yf.Ticker(f"{stock_id}.TW")
+    df = t.history(period="6mo")
+    if df.empty:
+        t = yf.Ticker(f"{stock_id}.TWO")
+        df = t.history(period="6mo")
+    
+    rt_data = get_realtime_candle(stock_id)
+    is_rt = False
+    pct_change = 0.0
+    
+    if not df.empty:
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        df.dropna(subset=['Close'], inplace=True)
         
-    return None, None
+        # 進行 K 線縫合手術
+        if rt_data:
+            today_ts = pd.Timestamp.today().normalize()
+            last_dt = df.index[-1].normalize()
+            
+            # 如果今天日期不在歷史資料裡，或者強行覆寫最新的今天資料
+            target_dt = today_ts if last_dt < today_ts else last_dt
+            
+            df.loc[target_dt, 'Open'] = rt_data['Open']
+            df.loc[target_dt, 'High'] = rt_data['High']
+            df.loc[target_dt, 'Low'] = rt_data['Low']
+            df.loc[target_dt, 'Close'] = rt_data['Close']
+            df.loc[target_dt, 'Volume'] = rt_data['Volume']
+            
+            is_rt = True
+            pct_change = rt_data['Pct']
+        elif len(df) >= 2:
+            pct_change = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+            
+    return df, pct_change, is_rt
 
 # ==========================================
 # 功能一：美股動向與國際局勢
@@ -155,7 +198,7 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
 # ==========================================
 elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
     st.header("🎯 自選股雷達掃描 (盤中即時戰情室)")
-    st.write("掃描預設口袋名單，結合 **雙引擎即時報價 API**，找出今日波動最大的標的。")
+    st.write("掃描預設口袋名單，所有指標與K線數據已完美同步至 **最新一秒**。")
     
     user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", st.session_state['watchlist'])
     st.session_state['watchlist'] = user_input
@@ -166,26 +209,20 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
         
         with st.spinner("啟動即時 API 引擎，抓取最新股價中..."):
             for sid in stocks:
-                df = get_stock_data(sid)
+                df, pct_change, is_rt = get_stock_data_with_rt(sid)
                 if not df.empty and len(df) > 20:
+                    latest = df.iloc[-1]
                     prev = df.iloc[-2]
-                    rt_price, rt_pct = get_realtime_quote(sid)
                     
-                    if rt_price is not None and rt_pct is not None:
-                        current_px = rt_price
-                        pct_change = rt_pct
-                        amplitude = ((df['High'].iloc[-1] - df['Low'].iloc[-1]) / prev['Close']) * 100 
-                    else:
-                        current_px = df['Close'].iloc[-1]
-                        pct_change = ((current_px - prev['Close']) / prev['Close']) * 100
-                        amplitude = ((df['High'].iloc[-1] - df['Low'].iloc[-1]) / prev['Close']) * 100
+                    current_px = latest['Close']
+                    amplitude = ((latest['High'] - latest['Low']) / prev['Close']) * 100 
                     
                     if pd.isna(amplitude) or np.isinf(amplitude):
                         amplitude = 0.0
                         
                     ma20 = df['Close'].rolling(20).mean().iloc[-1]
                     vol_5ma = df['Volume'].rolling(5).mean().iloc[-1]
-                    vol_ratio = (df['Volume'].iloc[-1] / vol_5ma) if (pd.notna(vol_5ma) and vol_5ma > 0) else 0.0
+                    vol_ratio = (latest['Volume'] / vol_5ma) if (pd.notna(vol_5ma) and vol_5ma > 0) else 0.0
                     
                     trend = "🟢 偏多" if current_px > ma20 else "🔴 偏空"
                     day_trade = "🔥 極佳" if amplitude >= 4.0 and vol_ratio >= 1.2 else "💤 沉悶"
@@ -246,10 +283,10 @@ elif option == "3. 台股三大法人資金流向":
                 
                 prices, pcts = [], []
                 for code in df_filtered['股票代號']:
-                    rt_price, rt_pct = get_realtime_quote(code)
-                    if rt_price is not None:
-                        prices.append(rt_price)
-                        pcts.append(rt_pct)
+                    rt_data = get_realtime_candle(code)
+                    if rt_data:
+                        prices.append(rt_data['Close'])
+                        pcts.append(rt_data['Pct'])
                     else:
                         prices.append(np.nan)
                         pcts.append(np.nan)
@@ -291,23 +328,19 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
     if analyze_btn:
         with st.spinner("計算技術指標與啟動雙引擎連線即時報價中..."):
             _, global_sentiment = fetch_us_macro()
-            df = get_stock_data(stock_id)
+            # 取得縫合過即時資料的超級 DataFrame
+            df, pct_change, is_rt = get_stock_data_with_rt(stock_id)
 
             if df.empty:
                 st.error(f"找不到代號 {stock_id} 的股價資料。")
             else:
                 stock_name = stock_id
-                rt_price, rt_pct = get_realtime_quote(stock_id)
+                latest_px = df['Close'].iloc[-1]
                 
-                if rt_price is not None and rt_pct is not None:
-                    latest_px = rt_price
-                    pct_change = rt_pct
-                    tag = "⚡ 盤中即時"
-                    diag_date_label = "台灣雙引擎即時連線中 🟢"
+                if is_rt:
+                    tag = "⚡ 盤中即時圖表同步"
+                    diag_date_label = "圖表與指標已更新至即時 🟢"
                 else:
-                    latest_px = df['Close'].iloc[-1]
-                    prev_px = df['Close'].iloc[-2]
-                    pct_change = ((latest_px - prev_px) / prev_px) * 100
                     tag = "📅 歷史收盤 (即時引擎遭阻擋)"
                     diag_date_label = df.index[-1].strftime("%Y-%m-%d")
                 
@@ -339,6 +372,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                                 has_t86_data = True
                                 break
 
+                # 在縫合後的 df 上計算指標，確保 MACD, KD 完美連動即時報價！
                 df['5MA'] = df['Close'].rolling(window=5).mean()
                 df['20MA'] = df['Close'].rolling(window=20).mean()
                 df['60MA'] = df['Close'].rolling(window=60).mean()
@@ -366,6 +400,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
                 df['D'] = df['K'].ewm(com=2, adjust=False).mean()
 
+                # 畫圖：現在 K 線圖最右邊那一根，就是剛抓下來熱騰騰的盤中數據！
                 fig = make_subplots(rows=5, cols=1, shared_xaxes=True, 
                                     vertical_spacing=0.02, row_heights=[0.4, 0.15, 0.15, 0.15, 0.15],
                                     subplot_titles=("股價與支撐壓力", "成交量", "MACD", "KD", "RSI"))
