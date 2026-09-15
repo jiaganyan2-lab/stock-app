@@ -5,7 +5,6 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-import re # 新增正規表達式套件，用來解析網頁
 
 # --- 頁面設定 ---
 st.set_page_config(page_title="全球股市與籌碼推斷系統", layout="wide")
@@ -74,19 +73,22 @@ def get_stock_data(stock_id):
         df['Volume'] = df['Volume'].fillna(0)
     return df
 
-# 【全新加入】台灣 Yahoo 股市即時爬蟲引擎 (每 60 秒快取一次，保證盤中即時)
+# 【終極引擎】直接對接 Yahoo 隱藏版 JSON API，無視網頁改版，100% 即時
 @st.cache_data(ttl=60)
 def get_realtime_quote(stock_id):
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        res = requests.get(url, headers=headers, timeout=3)
-        # 爬取網頁標題中的即時價格，格式如: "旺玖 (6233) 30.50 漲幅 1.50% - Yahoo奇摩股市"
-        match = re.search(rf'\({stock_id}\)\s+([0-9,.]+)\s+[^0-9+-]*([+-]?[0-9,.]+)%', res.text)
-        if match:
-            price = float(match.group(1).replace(',', ''))
-            pct = float(match.group(2).replace(',', ''))
-            return price, pct
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+        for suffix in [".TW", ".TWO"]:
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={stock_id}{suffix}"
+            res = requests.get(url, headers=headers, timeout=3)
+            data = res.json()
+            
+            if data.get('quoteResponse', {}).get('result'):
+                quote = data['quoteResponse']['result'][0]
+                price = quote.get('regularMarketPrice')
+                pct = quote.get('regularMarketChangePercent')
+                if price is not None and pct is not None:
+                    return float(price), float(pct)
     except:
         pass
     return None, None
@@ -134,7 +136,7 @@ if option == "1. 美股動向與國際局勢 (台股風向球)":
 # ==========================================
 elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
     st.header("🎯 自選股雷達掃描 (盤中即時戰情室)")
-    st.write("掃描預設口袋名單，結合 **Yahoo 奇摩股市即時報價**，找出今日波動最大的標的。")
+    st.write("掃描預設口袋名單，結合 **Yahoo 底層即時報價 API**，找出今日波動最大的標的。")
     
     user_input = st.text_input("您可以修改或新增追蹤代號 (以逗號分隔)：", st.session_state['watchlist'])
     st.session_state['watchlist'] = user_input
@@ -143,16 +145,14 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
         stocks = [s.strip() for s in user_input.split(',')]
         scan_results = []
         
-        with st.spinner("啟動即時爬蟲，抓取最新股價中..."):
+        with st.spinner("啟動即時 API 引擎，抓取最新股價中..."):
             for sid in stocks:
                 df = get_stock_data(sid)
                 if not df.empty and len(df) > 20:
                     prev = df.iloc[-2]
                     
-                    # 啟動新引擎：嘗試抓取盤中即時報價
                     rt_price, rt_pct = get_realtime_quote(sid)
                     
-                    # 如果成功抓到即時報價，就用即時的；如果抓不到(例如斷線)，就退回使用美國歷史庫的資料
                     if rt_price is not None and rt_pct is not None:
                         current_px = rt_price
                         pct_change = rt_pct
@@ -192,7 +192,7 @@ elif option == "2. 自選股雷達掃描 (現沖與波段尋寶)":
                     "今日振幅 (%)": st.column_config.NumberColumn("今日振幅 (%)", format="%.2f")
                 }
             )
-            st.caption("💡 提示：此頁面已掛載 Yahoo 奇摩股市即時爬蟲，盤中報價每 60 秒更新一次。")
+            st.caption("💡 提示：此頁面已掛載 Yahoo 即時 API，盤中報價每 60 秒更新一次。")
 
 # ==========================================
 # 功能三：台股三大法人資金流向
@@ -225,7 +225,6 @@ elif option == "3. 台股三大法人資金流向":
                 
                 df_filtered = df_clean.sort_values(by='三大法人合計(張)', ascending=False).head(15).copy()
                 
-                # 使用新引擎取得前 15 名的即時股價
                 prices, pcts = [], []
                 for code in df_filtered['股票代號']:
                     rt_price, rt_pct = get_realtime_quote(code)
@@ -279,18 +278,19 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 st.error(f"找不到代號 {stock_id} 的股價資料。")
             else:
                 stock_name = stock_id
-                # 啟動新引擎獲取真正即時的價格
                 rt_price, rt_pct = get_realtime_quote(stock_id)
                 
                 if rt_price is not None and rt_pct is not None:
                     latest_px = rt_price
                     pct_change = rt_pct
                     tag = "⚡ 盤中即時"
+                    diag_date_label = "即時連線中 🟢"
                 else:
                     latest_px = df['Close'].iloc[-1]
                     prev_px = df['Close'].iloc[-2]
                     pct_change = ((latest_px - prev_px) / prev_px) * 100
                     tag = "📅 歷史收盤"
+                    diag_date_label = df.index[-1].strftime("%Y-%m-%d")
                 
                 try:
                     info = yf.Ticker(f"{stock_id}.TW").info
@@ -380,7 +380,7 @@ elif option == "4. 個股技術面與籌碼綜合診斷":
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader("🤖 系統綜合診斷報告")
+                st.subheader(f"🤖 系統綜合診斷報告 (資料日期: {diag_date_label})")
                 
                 latest = df.iloc[-1]
                 score = 0
